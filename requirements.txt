@@ -1,0 +1,4 @@
+# 本项目目前不依赖第三方 Python 包。
+# 如需安装模块1（可编辑安装），请在 module1_video_repair 目录执行：
+#   python -m pip install -e .
+

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+dist/
+build/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Video repair outputs / tools
+module1_video_repair/input/*
+!module1_video_repair/input/.gitkeep
+module1_video_repair/output/*
+!module1_video_repair/output/.gitkeep
+module1_video_repair/template/*
+!module1_video_repair/template/.gitkeep
+module1_video_repair/tools/*
+!module1_video_repair/tools/.gitkeep
+
+# Auto-downloaded binaries (project-level cache)
+tools/*
+
