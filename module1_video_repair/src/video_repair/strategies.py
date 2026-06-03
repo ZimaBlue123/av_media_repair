@@ -28,6 +28,47 @@ def _run(command: list[str]) -> ExecResult:
     )
 
 
+# 常见视频格式扩展名（元数据/封装格式）
+SUPPORTED_VIDEO_EXTENSIONS = frozenset([
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".flv", ".wmv",
+    ".ts", ".mts", ".m2ts", ".vob", ".3gp", ".3g2", ".mpg", ".mpeg",
+    ".mxf", ".ogv", ".rm", ".rmvb", ".divx", ".asf", ".f4v",
+])
+
+
+def _get_video_codec_name(path: str | Path) -> str | None:
+    """通过文件头检测视频编码格式，返回编码器名称或 None"""
+    try:
+        with Path(path).open("rb") as f:
+            header = f.read(16)
+        if len(header) < 8:
+            return None
+        # ftyp box (MP4/MOV/M4V)
+        if header[:4] == b"ftyp":
+            return "h264"  # 默认假定为 H.264/AVC
+        # MKV/EBML
+        if header[:4] == b"\x1a\x45\xdf\xa3":
+            return "mkv"
+        # AVI
+        if header[:4] == b"RIFF" and len(header) >= 12 and header[8:12] == b"AVI ":
+            return "avi"
+        # FLV
+        if header[:3] == b"FLV":
+            return "flv"
+        # WMV/ASF
+        if header[:4] == b"\x30\x26\xb2\x75":
+            return "wmv"
+        # TS (MPEG-TS)
+        if header[:4] == b"\x47\x00\x00\x00":
+            return "ts"
+        # RM
+        if header[:4] == b".RMF":
+            return "rm"
+        return None
+    except Exception:
+        return None
+
+
 def sanitize_container_with_ffmpeg(
     input_path: str | Path,
     output_path: str | Path,
@@ -35,12 +76,16 @@ def sanitize_container_with_ffmpeg(
     ffmpeg: str | None = None,
 ) -> ExecResult:
     """
-    用 ffmpeg 重新写 MP4 封装（尽量无损 copy），提升播放器兼容性：
+    用 ffmpeg 重新写封装（尽量无损 copy），提升播放器兼容性：
     - 生成时间戳（genpts）
     - moov 前移（faststart）
+    - 根据文件扩展名自适应容器格式
+    支持：MP4/MOV/M4V/AVI/MKV/WebM/FLV/WMV/TS/MTS/M2TS/VOB/3GP/3G2/MPG/MPEG/MXF/OGV/RM/RMVB/DIVX/ASF/F4V
     """
     in_p = str(Path(input_path))
     out_p = str(Path(output_path))
+    ext = Path(in_p).suffix.lower()
+
     exe = ffmpeg or shutil.which("ffmpeg")
     if not exe:
         return ExecResult(
@@ -50,6 +95,34 @@ def sanitize_container_with_ffmpeg(
             stderr="未找到 ffmpeg。请先安装 ffmpeg，并确保 ffmpeg.exe 在 PATH 中，或传入 --ffmpeg 参数。",
             returncode=127,
         )
+
+    # 根据扩展名确定输出格式映射
+    format_map = {
+        ".mp4": "mp4",
+        ".mov": "mov",
+        ".m4v": "m4v",
+        ".avi": "avi",
+        ".mkv": "mkv",
+        ".webm": "webm",
+        ".flv": "flv",
+        ".wmv": "wmv",
+        ".ts": "mpegts",
+        ".mts": "mpegts",
+        ".m2ts": "mpegts",
+        ".vob": "mpeg",
+        ".3gp": "3gp",
+        ".3g2": "3gp",
+        ".mpg": "mpeg",
+        ".mpeg": "mpeg",
+        ".mxf": "mxf",
+        ".ogv": "ogg",
+        ".rm": "rm",
+        ".rmvb": "rm",
+        ".divx": "avi",
+        ".asf": "asf",
+        ".f4v": "flv",
+    }
+    out_format = format_map.get(ext, "mp4")
 
     cmd = [
         exe,
@@ -62,10 +135,24 @@ def sanitize_container_with_ffmpeg(
         "0",
         "-c",
         "copy",
-        "-movflags",
-        "+faststart",
-        out_p,
     ]
+
+    # 按容器类型添加特定标志
+    if out_format in ("mp4", "mov", "m4v"):
+        cmd.extend(["-movflags", "+faststart"])
+    elif out_format == "mkv":
+        cmd.extend(["-default_mode", "infer_no_subs"])
+    elif out_format == "mpegts":
+        cmd.extend(["-mpegts_flags", "initial_non_negative"])
+    elif out_format == "webm":
+        # WebM 仅支持 VP8/VP9/Vorbis，强制复制可能失败，不加 faststart
+        pass
+    elif out_format == "flv":
+        cmd.extend(["-flvflags", "no_metadata_none"])
+    elif out_format in ("asf", "wmv"):
+        cmd.extend(["-ws_warnflags", "ignore"])
+
+    cmd.extend(["-f", out_format, out_p])
     return _run(cmd)
 
 
@@ -77,9 +164,12 @@ def sanitize_audio_with_ffmpeg(
 ) -> ExecResult:
     """
     若 copy 封装后仍无声，可尝试重编码音频（视频仍 copy）。
+    支持所有常见视频格式的音频重编码。
     """
     in_p = str(Path(input_path))
     out_p = str(Path(output_path))
+    ext = Path(in_p).suffix.lower()
+
     exe = ffmpeg or shutil.which("ffmpeg")
     if not exe:
         return ExecResult(
@@ -90,25 +180,33 @@ def sanitize_audio_with_ffmpeg(
             returncode=127,
         )
 
+    # 根据扩展名确定输出格式
+    format_map = {
+        ".mp4": "mp4", ".mov": "mov", ".m4v": "m4v", ".avi": "avi",
+        ".mkv": "mkv", ".webm": "webm", ".flv": "flv", ".wmv": "wmv",
+        ".ts": "mpegts", ".mts": "mpegts", ".m2ts": "mpegts",
+        ".vob": "mpeg", ".3gp": "3gp", ".3g2": "3gp",
+        ".mpg": "mpeg", ".mpeg": "mpeg", ".mxf": "mxf",
+        ".ogv": "ogg", ".rm": "rm", ".rmvb": "rm",
+        ".divx": "avi", ".asf": "asf", ".f4v": "flv",
+    }
+    out_format = format_map.get(ext, "mp4")
+
     cmd = [
-        exe,
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        in_p,
-        "-map",
-        "0",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-movflags",
-        "+faststart",
-        out_p,
+        exe, "-y", "-fflags", "+genpts", "-i", in_p,
+        "-map", "0", "-c:v", "copy",
     ]
+
+    # WebM/Ogv 使用 Vorbis 音频，其他使用 AAC
+    if out_format in ("webm", "ogv"):
+        cmd.extend(["-c:a", "libvorbis", "-b:a", "128k"])
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", "160k"])
+
+    if out_format in ("mp4", "mov", "m4v"):
+        cmd.extend(["-movflags", "+faststart"])
+
+    cmd.extend(["-f", out_format, out_p])
     return _run(cmd)
 
 
@@ -121,10 +219,12 @@ def reencode_av_with_ffmpeg(
     """
     通过重新编码视频+音频来“重建码流”（最强兜底，耗时长）。
     - 视频：libopenh264（本项目内置 ffmpeg build 通常可用）
-    - 音频：AAC
+    - 音频：AAC（其他格式转 Vorbis）
+    支持所有常见视频格式的重编码处理。
     """
     in_p = str(Path(input_path))
     out_p = str(Path(output_path))
+    ext = Path(in_p).suffix.lower()
     exe = ffmpeg or shutil.which("ffmpeg")
     if not exe:
         return ExecResult(
@@ -135,41 +235,34 @@ def reencode_av_with_ffmpeg(
             returncode=127,
         )
 
+    # 根据扩展名确定输出格式
+    format_map = {
+        ".mp4": "mp4", ".mov": "mov", ".m4v": "m4v", ".avi": "avi",
+        ".mkv": "mkv", ".webm": "webm", ".flv": "flv", ".wmv": "wmv",
+        ".ts": "mpegts", ".mts": "mpegts", ".m2ts": "mpegts",
+        ".vob": "mpeg", ".3gp": "3gp", ".3g2": "3gp",
+        ".mpg": "mpeg", ".mpeg": "mpeg", ".mxf": "mxf",
+        ".ogv": "ogg", ".rm": "rm", ".rmvb": "rm",
+        ".divx": "avi", ".asf": "asf", ".f4v": "flv",
+    }
+    out_format = format_map.get(ext, "mp4")
+    use_vorbis = out_format in ("webm", "ogv")
+
     cmd = [
-        exe,
-        "-y",
-        "-hide_banner",
-        "-v",
-        "error",
-        # 对损坏码流更鲁棒：丢弃坏包 + 忽略解码错误（可能丢帧，但能去花屏）
-        "-fflags",
-        "+genpts+discardcorrupt",
-        "-err_detect",
-        "ignore_err",
-        "-i",
-        in_p,
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libopenh264",
-        "-pix_fmt",
-        "yuv420p",
-        "-g",
-        "60",
-        "-keyint_min",
-        "60",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-af",
-        "aresample=async=1:first_pts=0",
-        "-movflags",
-        "+faststart",
-        out_p,
+        exe, "-y", "-hide_banner", "-v", "error",
+        "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err",
+        "-i", in_p, "-map", "0:v:0", "-map", "0:a?",
+        "-c:v", "libopenh264", "-pix_fmt", "yuv420p",
+        "-g", "60", "-keyint_min", "60",
     ]
+    if use_vorbis:
+        cmd.extend(["-c:a", "libvorbis", "-b:a", "128k"])
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", "160k"])
+    cmd.extend(["-af", "aresample=async=1:first_pts=0"])
+    if out_format in ("mp4", "mov", "m4v"):
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.extend(["-f", out_format, out_p])
     return _run(cmd)
 
 

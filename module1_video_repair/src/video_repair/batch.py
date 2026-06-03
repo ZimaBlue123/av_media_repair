@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .ffprobe import ffprobe_json
 from .mp4_probe import probe_mp4_atoms
-from .strategies import ExecResult, reencode_av_with_ffmpeg, repair_with_untrunc, sanitize_audio_with_ffmpeg, sanitize_container_with_ffmpeg
+from .strategies import ExecResult, reencode_av_with_ffmpeg, repair_with_untrunc, sanitize_audio_with_ffmpeg, sanitize_container_with_ffmpeg, SUPPORTED_VIDEO_EXTENSIONS
 from .tooling import ToolPaths, ensure_ffmpeg_suite, ensure_untrunc
 
 
@@ -46,19 +46,19 @@ def _probe_to_jsonable_dict(p: str | Path) -> dict:
 
 def _pick_template_mp4(template_dir: Path) -> Path:
     cands = []
-    for ext in (".mp4", ".mov", ".m4v"):
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         cands.extend(template_dir.glob(f"*{ext}"))
     cands = [p for p in cands if p.is_file()]
     if not cands:
         raise FileNotFoundError(f"template 目录未找到视频文件：{template_dir}")
-    # 选最大的（通常更“完整”，且同设置几秒也会小，但至少确保不是空文件）
+    # 选最大的（通常更"完整"，且同设置几秒也会小，但至少确保不是空文件）
     cands.sort(key=lambda p: p.stat().st_size, reverse=True)
     return cands[0]
 
 
 def _list_inputs(input_dir: Path) -> list[Path]:
     cands: list[Path] = []
-    for ext in (".mp4", ".mov", ".m4v"):
+    for ext in SUPPORTED_VIDEO_EXTENSIONS:
         cands.extend(input_dir.glob(f"*{ext}"))
     cands = [p for p in cands if p.is_file()]
     # 避免把 untrunc 生成的 *_fixed*.mp4 再次作为输入反复处理
@@ -105,10 +105,10 @@ def repair_dir_with_untrunc(
         if r.ok and out_untrunc.exists() and tools.ffmpeg:
             ff_sanitize = sanitize_container_with_ffmpeg(out_untrunc, out_final, ffmpeg=str(tools.ffmpeg))
             if not ff_sanitize.ok:
-                # copy 失败时降级为“重编码音频”
+                # copy 失败时降级为"重编码音频"
                 ff_sanitize = sanitize_audio_with_ffmpeg(out_untrunc, out_final, ffmpeg=str(tools.ffmpeg))
 
-        # 可选：重编码（用于“花屏/扭曲”等码流级问题，耗时较长）
+        # 可选：重编码（用于"花屏/扭曲"等码流级问题，耗时较长）
         ff_reencode: ExecResult | None = None
         out_reencode = out_dir / f"{p.stem}_reencode{p.suffix}"
         if reencode_video and r.ok and out_untrunc.exists() and tools.ffmpeg:
@@ -165,4 +165,3 @@ def repair_dir_with_untrunc(
         rp.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2), encoding="utf-8")
 
     return report
-
