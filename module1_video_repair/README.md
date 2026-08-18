@@ -1,6 +1,6 @@
 # 模块1：视频修复（module1_video_repair）
 
-[English](README_en.md)
+[English](README_en.md) | 简体中文
 
 目标：尽可能把"播放器打不开"的视频修复成可播放文件，且**不覆盖原文件**。
 
@@ -33,7 +33,7 @@ python -m pip install -e .
 ### 1) 诊断文件（是否缺少 moov）
 
 ```bash
-python -m video_repair.cli probe "E:\Cursor Project\录屏1-20260401.mp4"
+python -m video_repair probe "E:\Cursor Project\录屏1-20260401.mp4"
 ```
 
 ### 2) 尝试用 ffmpeg 无损重封装（适用于 moov 在末尾）
@@ -41,31 +41,31 @@ python -m video_repair.cli probe "E:\Cursor Project\录屏1-20260401.mp4"
 > 需要你已安装 `ffmpeg`，并且 `ffmpeg.exe` 在 PATH 中。
 
 ```bash
-python -m video_repair.cli remux "E:\Cursor Project\input.mp4" -o "E:\Cursor Project\output_remux.mp4"
+python -m video_repair remux "E:\Cursor Project\input.mp4" -o "E:\Cursor Project\output_remux.mp4"
 ```
 
 ### 3) 用 untrunc 修复（适用于缺少 moov）
 
 > 需要：
 > - 一个"同录屏设置"的正常样本视频 `good.mp4`（几秒即可）
-> - `untrunc.exe`（本项目在 Windows 下可自动下载并缓存到 `module1_video_repair/tools/`）
+> - `untrunc.exe`（本项目在 Windows 下可自动下载并缓存到 `tools/untrunc/`）
 
 ```bash
-python -m video_repair.cli untrunc "E:\Cursor Project\good.mp4" "E:\Cursor Project\录屏1-20260401.mp4" -o "E:\Cursor Project\output_fixed.mp4" --untrunc "C:\path\to\untrunc.exe"
+python -m video_repair untrunc "E:\Cursor Project\good.mp4" "E:\Cursor Project\录屏1-20260401.mp4" -o "E:\Cursor Project\output_fixed.mp4" --untrunc "C:\path\to\untrunc.exe"
 ```
 
-### 4) 方案 B（成功率高）：批量用"正常同设置视频"重建 moov
+### 4) 批量用"正常同设置视频"重建 moov
 
-你当前目录约定：
+目录约定：
 
 - 异常视频：`module1_video_repair/input/`
 - 正常视频：`module1_video_repair/template/`
 - 输出目录：`module1_video_repair/output/`
 
-一键批量修复 + 自检（会写出 JSON 报告）：
+一键批量修复 + 自检（会写出 JSON 报告，并自动清理未使用的中间文件）：
 
 ```bash
-python -m video_repair.cli batch-untrunc `
+python -m video_repair batch-untrunc `
   --input-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\input" `
   --template-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\template" `
   --output-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\output" `
@@ -75,7 +75,7 @@ python -m video_repair.cli batch-untrunc `
 如果修复后"能打开但画面扭曲/花屏/部分播放器无声"，启用**强兜底重编码**（耗时长，但兼容性最好）：
 
 ```bash
-python -m video_repair.cli batch-untrunc `
+python -m video_repair batch-untrunc `
   --input-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\input" `
   --template-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\template" `
   --output-dir "E:\Cursor Project\11-av_media_repair\module1_video_repair\output" `
@@ -83,10 +83,11 @@ python -m video_repair.cli batch-untrunc `
   --reencode-video
 ```
 
-说明：
+### 5) 运行单元测试
 
-- `template` 目录里如有多个视频，工具会自动挑选**最大**的一个作为样本。
-- Windows 下若本机没装 `untrunc/ffprobe`，会尝试从 GitHub Releases 下载并缓存到 `module1_video_repair/tools/`（下次复用）。
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## 安全建议
 

@@ -15,9 +15,9 @@ This project is designed to **repair corrupted/incomplete video files** and prov
 | Feature | Description |
 |---------|-------------|
 | **Corrupted Video Repair** | Rebuild missing moov atoms (index/metadata) via untrunc |
-| **Batch Processing** | Directory-level batch repair with automatic template selection |
+| **Batch Processing** | Directory-level batch repair with automatic template selection & intermediate cleanup |
 | **Format Compatibility** | Lossless remux / Audio re-encode / Full re-encode (3 tiers) |
-| **Format Probe** | MP4 atom structure probing to diagnose missing moov/mdat |
+| **Format Probe** | ISO BMFF box structure probing to accurately diagnose missing moov/mdat |
 | **FFmpeg Toolchain** | Auto-download/manage ffmpeg/ffprobe/untrunc |
 
 ### Supported Video Formats
@@ -31,11 +31,11 @@ This project is designed to **repair corrupted/incomplete video files** and prov
 ### Method 1: Batch Repair (Recommended)
 
 ```bash
-# Install dependencies
+# Zero third-party dependencies, standard library ready
 pip install -r requirements.txt
 
 # Batch repair (auto-downloads tools)
-python -m video_repair.cli batch-untrunc \
+python -m video_repair batch-untrunc \
   --input-dir ./input \
   --template-dir ./template \
   --output-dir ./output
@@ -45,13 +45,13 @@ python -m video_repair.cli batch-untrunc \
 
 ```bash
 # Probe MP4 structure
-python -m video_repair.cli probe input.mp4
+python -m video_repair probe input.mp4
 
 # Remux (lossless, improve compatibility)
-python -m video_repair.cli remux input.mp4 -o output.mp4
+python -m video_repair remux input.mp4 -o output.mp4
 
 # Repair with untrunc
-python -m video_repair.cli untrunc good.mp4 broken.mp4 -o fixed.mp4
+python -m video_repair untrunc good.mp4 broken.mp4 -o fixed.mp4
 ```
 
 ### Method 3: Python API
@@ -65,8 +65,20 @@ report = repair_dir_with_untrunc(
     output_dir="./output",
     reencode_video=True,  # Enable re-encode (slower but more thorough)
     report_path="./repair_report.json",
+    cleanup=True,         # Auto-clean intermediate files
 )
 print(f"Success: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(report.items)}")
+```
+
+---
+
+## Running Tests
+
+This project includes a comprehensive test suite using Python's standard `unittest` library (zero external dependencies):
+
+```bash
+cd module1_video_repair
+python -m unittest discover -s tests -v
 ```
 
 ---
@@ -77,16 +89,19 @@ print(f"Success: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(repo
 11-av_media_repair/
 ├── module1_video_repair/          # Main module
 │   ├── src/video_repair/
-│   │   ├── cli.py                 # CLI entry point
+│   │   ├── __init__.py            # API exports
+│   │   ├── __main__.py            # Module entry point (python -m video_repair)
+│   │   ├── cli.py                 # CLI interface
 │   │   ├── batch.py               # Batch repair logic
 │   │   ├── strategies.py          # FFmpeg/untrunc strategies
-│   │   ├── mp4_probe.py           # MP4 atom probing
+│   │   ├── mp4_probe.py           # ISO BMFF box probing
 │   │   ├── ffprobe.py             # ffprobe wrapper
 │   │   └── tooling.py             # Tool auto-download/management
+│   ├── tests/                     # Test suite (unittest)
 │   ├── input/                     # Input directory (gitkeep)
 │   ├── output/                    # Output directory (gitkeep)
 │   └── template/                  # Template video directory (gitkeep)
-├── tools/                        # Tool cache directory (auto-downloaded)
+├── tools/                         # Tool cache directory (auto-downloaded)
 ├── requirements.txt
 └── README.md
 ```
@@ -116,8 +131,8 @@ print(f"Success: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(repo
 
 ```
 Input → untrunc rebuild moov → sanitize(remux) → (optional) reencode → Output
-                              ↓ fallback on failure
-                         sanitize_audio(re-encode audio)
+                               ↓ fallback on failure
+                          sanitize_audio(re-encode audio)
 ```
 
 ---

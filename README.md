@@ -15,9 +15,9 @@
 | 功能 | 说明 |
 |------|------|
 | **损坏视频修复** | 通过 untrunc 重建缺失的 moov atom（索引/元数据） |
-| **批量处理** | 支持目录级批量修复，自动选取模板视频 |
+| **批量处理** | 支持目录级批量修复，自动选取模板视频与清理中间文件 |
 | **格式兼容增强** | 无损重封装/音频重编码/完整重编码三档处理 |
-| **格式探测** | MP4 atom 结构探测，诊断缺失的 moov/mdat |
+| **格式探测** | MP4 ISO BMFF box 结构探测，精准诊断缺失的 moov/mdat |
 | **FFmpeg 工具链** | 自动下载/管理需要的 ffmpeg/ffprobe/untrunc |
 
 ### 支持的视频格式
@@ -31,11 +31,11 @@
 ### 方式一：批量修复（推荐）
 
 ```bash
-# 安装依赖
+# 0 依赖，直接使用标准库或可编辑安装
 pip install -r requirements.txt
 
 # 批量修复（自动下载工具）
-python -m video_repair.cli batch-untrunc \
+python -m video_repair batch-untrunc \
   --input-dir ./input \
   --template-dir ./template \
   --output-dir ./output
@@ -45,13 +45,13 @@ python -m video_repair.cli batch-untrunc \
 
 ```bash
 # 探测 MP4 结构
-python -m video_repair.cli probe input.mp4
+python -m video_repair probe input.mp4
 
 # 重新封装（无损，提升兼容性）
-python -m video_repair.cli remux input.mp4 -o output.mp4
+python -m video_repair remux input.mp4 -o output.mp4
 
 # 用 untrunc 修复
-python -m video_repair.cli untrunc good.mp4 broken.mp4 -o fixed.mp4
+python -m video_repair untrunc good.mp4 broken.mp4 -o fixed.mp4
 ```
 
 ### 方式三：Python API
@@ -65,8 +65,20 @@ report = repair_dir_with_untrunc(
     output_dir="./output",
     reencode_video=True,  # 启用重编码（耗时更长但更彻底）
     report_path="./repair_report.json",
+    cleanup=True,         # 自动清理中间产物
 )
 print(f"成功: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(report.items)}")
+```
+
+---
+
+## 运行测试
+
+本项目内置完整的单元测试套件，零外部依赖即可直接运行：
+
+```bash
+cd module1_video_repair
+python -m unittest discover -s tests -v
 ```
 
 ---
@@ -77,16 +89,19 @@ print(f"成功: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(repor
 11-av_media_repair/
 ├── module1_video_repair/          # 主模块
 │   ├── src/video_repair/
-│   │   ├── cli.py                 # 命令行入口
+│   │   ├── __init__.py            # API 导出
+│   │   ├── __main__.py            # 模块入口 (python -m video_repair)
+│   │   ├── cli.py                 # 命令行接口
 │   │   ├── batch.py               # 批量修复逻辑
 │   │   ├── strategies.py          # FFmpeg/untrunc 策略
-│   │   ├── mp4_probe.py           # MP4 atom 探测
+│   │   ├── mp4_probe.py           # ISO BMFF box 探测
 │   │   ├── ffprobe.py             # ffprobe 封装
 │   │   └── tooling.py             # 工具自动下载/管理
+│   ├── tests/                     # 单元测试套件 (unittest)
 │   ├── input/                     # 输入目录（gitkeep）
-│   ├── output/                   # 输出目录（gitkeep）
-│   └── template/                 # 模板视频目录（gitkeep）
-├── tools/                        # 工具缓存目录（自动下载）
+│   ├── output/                    # 输出目录（gitkeep）
+│   └── template/                  # 模板视频目录（gitkeep）
+├── tools/                         # 工具缓存目录（自动下载）
 ├── requirements.txt
 └── README.md
 ```
@@ -116,8 +131,8 @@ print(f"成功: {sum(1 for i in report.items if i.untrunc.get('ok'))}/{len(repor
 
 ```
 输入 → untrunc 重建 moov → sanitize(重封) → (可选)reencode → 输出
-                              ↓ 失败时降级
-                         sanitize_audio(重编码音频)
+                               ↓ 失败时降级
+                          sanitize_audio(重编码音频)
 ```
 
 ---
