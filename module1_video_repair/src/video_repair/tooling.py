@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 import urllib.error
@@ -30,12 +31,13 @@ def _tools_dir(base_dir: str | Path | None = None) -> Path:
 
 
 def _http_get_json(url: str, *, timeout_s: int = 60) -> object:
+    token = os.environ.get("GITHUB_TOKEN")
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "av_media_repair/module1_video_repair"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "av_media_repair/module1_video_repair",
-        },
+        headers=headers,
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -47,6 +49,8 @@ def _download(url: str, dest: Path, *, timeout_s: int = 300) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "av_media_repair/module1_video_repair"})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp, dest.open("wb") as f:
         shutil.copyfileobj(resp, f)
+    if not dest.exists() or dest.stat().st_size == 0:
+        raise RuntimeError(f"下载失败或文件为空：{dest}")
 
 
 def _extract_zip_member(zip_path: Path, member_suffix: str, dest_path: Path) -> None:
@@ -113,6 +117,18 @@ def _pick_github_asset(assets: list[dict], *, prefer_zip: bool, keywords: list[s
     return best
 
 
+def _exe_works(exe: Path, test_args: list[str] | None = None) -> bool:
+    try:
+        res = subprocess.run(
+            [str(exe)] + (test_args or ["--version"]),
+            capture_output=True,
+            timeout=10
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
 def ensure_untrunc(*, tools_dir: str | Path | None = None, untrunc_path: str | None = None) -> Path:
     if untrunc_path:
         p = Path(untrunc_path)
@@ -129,11 +145,8 @@ def ensure_untrunc(*, tools_dir: str | Path | None = None, untrunc_path: str | N
 
     td = _tools_dir(tools_dir) / "untrunc"
     exe = td / "untrunc.exe"
-    if exe.exists():
-        # 许多 Windows 发行版需要同目录 DLL；若缺失则继续走下载/解压流程
-        has_dll = any(p.suffix.lower() == ".dll" for p in td.glob("*.dll"))
-        if has_dll:
-            return exe
+    if exe.exists() and _exe_works(exe, ["-h"]):
+        return exe
 
     # 使用已知的 GitHub Releases 直链（避免 GitHub API rate limit）
     arch = platform.machine().lower()
@@ -168,28 +181,35 @@ def ensure_ffmpeg_suite(*, tools_dir: str | Path | None = None, ffmpeg_path: str
     td = _tools_dir(tools_dir) / "ffmpeg"
     ffmpeg_exe = td / "ffmpeg.exe"
     ffprobe_exe = td / "ffprobe.exe"
-    if ffmpeg_exe.exists() and ffprobe_exe.exists():
-        has_dll = any(p.suffix.lower() == ".dll" for p in td.glob("*.dll"))
-        if has_dll:
-            return ToolPaths(untrunc=None, ffmpeg=ffmpeg_exe, ffprobe=ffprobe_exe)
+    if ffmpeg_exe.exists() and ffprobe_exe.exists() and _exe_works(ffmpeg_exe) and _exe_works(ffprobe_exe):
+        return ToolPaths(untrunc=None, ffmpeg=ffmpeg_exe, ffprobe=ffprobe_exe)
 
-    # 从 BtbN/FFmpeg-Builds 自动下载 win64 gpl zip（包含 ffmpeg/ffprobe）
-    api = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
-    data = _http_get_json(api)
-    assets = list(data.get("assets") or [])
-    asset = _pick_github_asset(
-        assets,
-        prefer_zip=True,
-        keywords=["win64", "gpl", "shared", "lgpl", "zip"],
-    )
-    if not asset:
-        return ToolPaths(untrunc=None, ffmpeg=ffmpeg, ffprobe=ffprobe)
-
-    url = str(asset.get("browser_download_url"))
-    name = str(asset.get("name") or "ffmpeg.zip")
+    # Use known BtbN release URL pattern (avoids GitHub API rate limits)
+    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+    name = "ffmpeg-master-latest-win64-gpl-shared.zip"
+    
     with tempfile.TemporaryDirectory() as tmp:
         tmp_zip = Path(tmp) / name
-        _download(url, tmp_zip)
+        try:
+            _download(url, tmp_zip)
+        except Exception:
+            # Fallback to GitHub API
+            api = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest"
+            data = _http_get_json(api)
+            assets = list(data.get("assets") or [])
+            asset = _pick_github_asset(
+                assets,
+                prefer_zip=True,
+                keywords=["win64", "gpl", "shared", "lgpl", "zip"],
+            )
+            if not asset:
+                return ToolPaths(untrunc=None, ffmpeg=ffmpeg, ffprobe=ffprobe)
+
+            url = str(asset.get("browser_download_url"))
+            name = str(asset.get("name") or "ffmpeg.zip")
+            tmp_zip = Path(tmp) / name
+            _download(url, tmp_zip)
+
         # Windows 发行版可能是 shared build，需要同目录 DLL；一并解压
         _extract_zip_folder_containing(tmp_zip, "ffprobe.exe", td)
         # 保险：若 ffmpeg.exe 没在同目录（极少数压缩包结构差异），再按需补齐
@@ -208,4 +228,3 @@ def default_tools(*, tools_dir: str | Path | None = None) -> ToolPaths:
 
     suite = ensure_ffmpeg_suite(tools_dir=tools_dir)
     return ToolPaths(untrunc=untrunc, ffmpeg=suite.ffmpeg, ffprobe=suite.ffprobe)
-

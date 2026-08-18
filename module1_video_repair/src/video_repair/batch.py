@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ from .ffprobe import ffprobe_json
 from .mp4_probe import probe_mp4_atoms
 from .strategies import ExecResult, reencode_av_with_ffmpeg, repair_with_untrunc, sanitize_audio_with_ffmpeg, sanitize_container_with_ffmpeg, SUPPORTED_VIDEO_EXTENSIONS
 from .tooling import ToolPaths, ensure_ffmpeg_suite, ensure_untrunc
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,16 @@ def _list_inputs(input_dir: Path) -> list[Path]:
     return cands
 
 
+def _try_remove(path: Path) -> None:
+    """尝试删除文件，失败时仅记录警告。"""
+    try:
+        if path.exists():
+            path.unlink()
+            logger.debug("Cleaned up intermediate file: %s", path)
+    except OSError as e:
+        logger.warning("Failed to clean up %s: %s", path, e)
+
+
 def repair_dir_with_untrunc(
     *,
     input_dir: str | Path,
@@ -77,6 +90,7 @@ def repair_dir_with_untrunc(
     ffprobe: str | None = None,
     reencode_video: bool = False,
     report_path: str | Path | None = None,
+    cleanup: bool = True,
 ) -> BatchReport:
     in_dir = Path(input_dir)
     tpl_dir = Path(template_dir)
@@ -85,6 +99,10 @@ def repair_dir_with_untrunc(
 
     tpl = _pick_template_mp4(tpl_dir)
     inputs = _list_inputs(in_dir)
+    total = len(inputs)
+
+    logger.info("Template: %s", tpl)
+    logger.info("Found %d input file(s) in %s", total, in_dir)
 
     untrunc_exe = ensure_untrunc(tools_dir=tools_dir, untrunc_path=untrunc)
     suite = ensure_ffmpeg_suite(tools_dir=tools_dir, ffprobe_path=ffprobe)
@@ -92,12 +110,16 @@ def repair_dir_with_untrunc(
 
     items: list[ItemReport] = []
     started = time.time()
-    for p in inputs:
+    for idx, p in enumerate(inputs, 1):
+        logger.info("[%d/%d] Processing: %s", idx, total, p.name)
         t0 = time.time()
         before = _probe_to_jsonable_dict(p)
 
         out_untrunc = out_dir / f"{p.stem}_untrunc{p.suffix}"
         r: ExecResult = repair_with_untrunc(tpl, p, out_untrunc, untrunc=str(untrunc_exe))
+
+        if not r.ok:
+            logger.warning("[%d/%d] untrunc FAILED for %s: %s", idx, total, p.name, r.stderr[:200])
 
         # 二次封装整理（提升播放器兼容性）
         ff_sanitize: ExecResult | None = None
@@ -132,6 +154,17 @@ def repair_dir_with_untrunc(
             fp_err = None if fp.ok else fp.stderr
 
         elapsed = int((time.time() - t0) * 1000)
+
+        # 清理未使用的中间文件
+        if cleanup:
+            intermediates = {out_untrunc, out_final, out_reencode}
+            intermediates.discard(out_main)
+            for tmp_file in intermediates:
+                _try_remove(tmp_file)
+
+        status = "OK" if r.ok else "FAILED"
+        logger.info("[%d/%d] %s — %s (%.1fs)", idx, total, status, p.name, elapsed / 1000)
+
         items.append(
             ItemReport(
                 input_path=str(p),
@@ -149,6 +182,9 @@ def repair_dir_with_untrunc(
         )
 
     finished = time.time()
+    ok_count = sum(1 for i in items if i.untrunc.get("ok"))
+    logger.info("Batch complete: %d/%d succeeded in %.1fs", ok_count, total, finished - started)
+
     report = BatchReport(
         started_at=started,
         finished_at=finished,

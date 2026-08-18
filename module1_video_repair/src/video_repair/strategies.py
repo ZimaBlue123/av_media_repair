@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,10 +16,10 @@ class ExecResult:
     returncode: int
 
 
-def _run(command: list[str]) -> ExecResult:
+def _run(command: list[str], cwd: str | None = None) -> ExecResult:
     # 某些第三方可执行文件在 Windows 下会输出非 UTF-8 文本；
     # 这里用 errors='replace' 避免解码异常导致子进程输出读取线程崩溃。
-    p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
     return ExecResult(
         ok=(p.returncode == 0),
         command=command,
@@ -35,38 +36,35 @@ SUPPORTED_VIDEO_EXTENSIONS = frozenset([
     ".mxf", ".ogv", ".rm", ".rmvb", ".divx", ".asf", ".f4v",
 ])
 
+_FORMAT_MAP = {
+    ".mp4": "mp4",
+    ".mov": "mov",
+    ".m4v": "m4v",
+    ".avi": "avi",
+    ".mkv": "mkv",
+    ".webm": "webm",
+    ".flv": "flv",
+    ".wmv": "wmv",
+    ".ts": "mpegts",
+    ".mts": "mpegts",
+    ".m2ts": "mpegts",
+    ".vob": "mpeg",
+    ".3gp": "3gp",
+    ".3g2": "3gp",
+    ".mpg": "mpeg",
+    ".mpeg": "mpeg",
+    ".mxf": "mxf",
+    ".ogv": "ogg",
+    ".rm": "rm",
+    ".rmvb": "rm",
+    ".divx": "avi",
+    ".asf": "asf",
+    ".f4v": "flv",
+}
 
-def _get_video_codec_name(path: str | Path) -> str | None:
-    """通过文件头检测视频编码格式，返回编码器名称或 None"""
-    try:
-        with Path(path).open("rb") as f:
-            header = f.read(16)
-        if len(header) < 8:
-            return None
-        # ftyp box (MP4/MOV/M4V)
-        if header[:4] == b"ftyp":
-            return "h264"  # 默认假定为 H.264/AVC
-        # MKV/EBML
-        if header[:4] == b"\x1a\x45\xdf\xa3":
-            return "mkv"
-        # AVI
-        if header[:4] == b"RIFF" and len(header) >= 12 and header[8:12] == b"AVI ":
-            return "avi"
-        # FLV
-        if header[:3] == b"FLV":
-            return "flv"
-        # WMV/ASF
-        if header[:4] == b"\x30\x26\xb2\x75":
-            return "wmv"
-        # TS (MPEG-TS)
-        if header[:4] == b"\x47\x00\x00\x00":
-            return "ts"
-        # RM
-        if header[:4] == b".RMF":
-            return "rm"
-        return None
-    except Exception:
-        return None
+
+def _resolve_ffmpeg(ffmpeg: str | None) -> str | None:
+    return ffmpeg or shutil.which("ffmpeg")
 
 
 def sanitize_container_with_ffmpeg(
@@ -86,7 +84,7 @@ def sanitize_container_with_ffmpeg(
     out_p = str(Path(output_path))
     ext = Path(in_p).suffix.lower()
 
-    exe = ffmpeg or shutil.which("ffmpeg")
+    exe = _resolve_ffmpeg(ffmpeg)
     if not exe:
         return ExecResult(
             ok=False,
@@ -96,33 +94,7 @@ def sanitize_container_with_ffmpeg(
             returncode=127,
         )
 
-    # 根据扩展名确定输出格式映射
-    format_map = {
-        ".mp4": "mp4",
-        ".mov": "mov",
-        ".m4v": "m4v",
-        ".avi": "avi",
-        ".mkv": "mkv",
-        ".webm": "webm",
-        ".flv": "flv",
-        ".wmv": "wmv",
-        ".ts": "mpegts",
-        ".mts": "mpegts",
-        ".m2ts": "mpegts",
-        ".vob": "mpeg",
-        ".3gp": "3gp",
-        ".3g2": "3gp",
-        ".mpg": "mpeg",
-        ".mpeg": "mpeg",
-        ".mxf": "mxf",
-        ".ogv": "ogg",
-        ".rm": "rm",
-        ".rmvb": "rm",
-        ".divx": "avi",
-        ".asf": "asf",
-        ".f4v": "flv",
-    }
-    out_format = format_map.get(ext, "mp4")
+    out_format = _FORMAT_MAP.get(ext, "mp4")
 
     cmd = [
         exe,
@@ -170,7 +142,7 @@ def sanitize_audio_with_ffmpeg(
     out_p = str(Path(output_path))
     ext = Path(in_p).suffix.lower()
 
-    exe = ffmpeg or shutil.which("ffmpeg")
+    exe = _resolve_ffmpeg(ffmpeg)
     if not exe:
         return ExecResult(
             ok=False,
@@ -180,17 +152,7 @@ def sanitize_audio_with_ffmpeg(
             returncode=127,
         )
 
-    # 根据扩展名确定输出格式
-    format_map = {
-        ".mp4": "mp4", ".mov": "mov", ".m4v": "m4v", ".avi": "avi",
-        ".mkv": "mkv", ".webm": "webm", ".flv": "flv", ".wmv": "wmv",
-        ".ts": "mpegts", ".mts": "mpegts", ".m2ts": "mpegts",
-        ".vob": "mpeg", ".3gp": "3gp", ".3g2": "3gp",
-        ".mpg": "mpeg", ".mpeg": "mpeg", ".mxf": "mxf",
-        ".ogv": "ogg", ".rm": "rm", ".rmvb": "rm",
-        ".divx": "avi", ".asf": "asf", ".f4v": "flv",
-    }
-    out_format = format_map.get(ext, "mp4")
+    out_format = _FORMAT_MAP.get(ext, "mp4")
 
     cmd = [
         exe, "-y", "-fflags", "+genpts", "-i", in_p,
@@ -225,7 +187,8 @@ def reencode_av_with_ffmpeg(
     in_p = str(Path(input_path))
     out_p = str(Path(output_path))
     ext = Path(in_p).suffix.lower()
-    exe = ffmpeg or shutil.which("ffmpeg")
+    
+    exe = _resolve_ffmpeg(ffmpeg)
     if not exe:
         return ExecResult(
             ok=False,
@@ -235,17 +198,7 @@ def reencode_av_with_ffmpeg(
             returncode=127,
         )
 
-    # 根据扩展名确定输出格式
-    format_map = {
-        ".mp4": "mp4", ".mov": "mov", ".m4v": "m4v", ".avi": "avi",
-        ".mkv": "mkv", ".webm": "webm", ".flv": "flv", ".wmv": "wmv",
-        ".ts": "mpegts", ".mts": "mpegts", ".m2ts": "mpegts",
-        ".vob": "mpeg", ".3gp": "3gp", ".3g2": "3gp",
-        ".mpg": "mpeg", ".mpeg": "mpeg", ".mxf": "mxf",
-        ".ogv": "ogg", ".rm": "rm", ".rmvb": "rm",
-        ".divx": "avi", ".asf": "asf", ".f4v": "flv",
-    }
-    out_format = format_map.get(ext, "mp4")
+    out_format = _FORMAT_MAP.get(ext, "mp4")
     use_vorbis = out_format in ("webm", "ogv")
 
     cmd = [
@@ -269,7 +222,8 @@ def reencode_av_with_ffmpeg(
 def remux_with_ffmpeg(input_path: str | Path, output_path: str | Path, *, ffmpeg: str | None = None) -> ExecResult:
     in_p = str(Path(input_path))
     out_p = str(Path(output_path))
-    exe = ffmpeg or shutil.which("ffmpeg")
+    
+    exe = _resolve_ffmpeg(ffmpeg)
     if not exe:
         return ExecResult(
             ok=False,
@@ -292,9 +246,10 @@ def repair_with_untrunc(
     *,
     untrunc: str | None = None,
 ) -> ExecResult:
-    good_p = str(Path(good_path))
-    broken_p = str(Path(broken_path))
-    out_p = str(Path(output_path))
+    good_p = str(Path(good_path).absolute())
+    broken_p = str(Path(broken_path).absolute())
+    out_p = str(Path(output_path).absolute())
+    
     exe = untrunc or shutil.which("untrunc") or shutil.which("untrunc.exe")
     if not exe:
         return ExecResult(
@@ -305,62 +260,62 @@ def repair_with_untrunc(
             returncode=127,
         )
 
-    # untrunc 默认会输出到当前目录/或生成新文件名，各版本行为略有不同
-    # 这里用工作目录 + 复制结果的方式，保证输出路径可控。
     out_dir = Path(out_p).parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [exe, good_p, broken_p]
-    t_before = Path(broken_p).stat().st_mtime if Path(broken_p).exists() else None
-    r = _run(cmd)
-    if not r.ok:
-        return r
-
-    # 尝试在 broken 文件同目录找到 untrunc 输出（常见：<broken>_fixed.mp4 或 fixed_<broken>）
-    candidates = []
-    broken_name = Path(broken_p).name
-    for pat in (
-        f"{Path(broken_p).stem}_fixed{Path(broken_p).suffix}",
-        f"fixed_{broken_name}",
-        f"repaired_{broken_name}",
-        f"{broken_name}_fixed.mp4",
-    ):
-        candidates.append(Path.cwd() / pat)
-        candidates.append(Path(broken_p).with_name(pat))
-
-    produced = next((c for c in candidates if c.exists() and c.stat().st_size > 0), None)
-    if not produced:
-        # 兜底：在坏文件目录中找最新的 *fixed*.mp4
-        bdir = Path(broken_p).parent
-        fixed = sorted(
-            [p for p in bdir.glob("*fixed*.mp4") if p.is_file() and p.stat().st_size > 0],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        # 若能拿到执行前时间，用它过滤掉更早的文件
-        if t_before is not None:
-            fixed = [p for p in fixed if p.stat().st_mtime >= t_before]
-        produced = fixed[0] if fixed else None
-    if not produced:
-        return ExecResult(
-            ok=False,
-            command=cmd,
-            stdout=r.stdout,
-            stderr=(r.stderr + "\n" if r.stderr else "")
-            + "untrunc 执行成功但未找到输出文件（不同版本输出命名可能不同）。请在命令执行目录和坏文件目录手动查找 *fixed*.mp4。",
-            returncode=2,
-        )
-
+    # Use a temporary directory for execution
+    tmpdir = tempfile.mkdtemp()
     try:
-        Path(out_p).write_bytes(produced.read_bytes())
-    except Exception as e:  # noqa: BLE001
-        return ExecResult(
-            ok=False,
-            command=cmd,
-            stdout=r.stdout,
-            stderr=(r.stderr + "\n" if r.stderr else "") + f"复制输出到目标路径失败：{e}",
-            returncode=3,
-        )
+        tmp_broken = Path(tmpdir) / Path(broken_p).name
+        shutil.copy2(broken_p, tmp_broken)
 
-    return ExecResult(ok=True, command=cmd, stdout=r.stdout, stderr=r.stderr, returncode=0)
+        cmd = [exe, good_p, str(tmp_broken)]
+        r = _run(cmd, cwd=tmpdir)
+        if not r.ok:
+            return r
 
+        # Search for output files only in the temp dir
+        candidates = []
+        broken_name = tmp_broken.name
+        for pat in (
+            f"{tmp_broken.stem}_fixed{tmp_broken.suffix}",
+            f"fixed_{broken_name}",
+            f"repaired_{broken_name}",
+            f"{broken_name}_fixed.mp4",
+        ):
+            candidates.append(Path(tmpdir) / pat)
+
+        produced = next((c for c in candidates if c.exists() and c.stat().st_size > 0), None)
+        if not produced:
+            fixed = sorted(
+                [p for p in Path(tmpdir).glob("*fixed*.mp4") if p.is_file() and p.stat().st_size > 0],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            produced = fixed[0] if fixed else None
+            
+        if not produced:
+            return ExecResult(
+                ok=False,
+                command=cmd,
+                stdout=r.stdout,
+                stderr=(r.stderr + "\n" if r.stderr else "")
+                + "untrunc 执行成功但未找到输出文件（不同版本输出命名可能不同）。",
+                returncode=2,
+            )
+
+        try:
+            shutil.copy2(str(produced), out_p)
+        except Exception as e:  # noqa: BLE001
+            return ExecResult(
+                ok=False,
+                command=cmd,
+                stdout=r.stdout,
+                stderr=(r.stderr + "\n" if r.stderr else "") + f"复制输出到目标路径失败：{e}",
+                returncode=3,
+            )
+
+        return ExecResult(ok=True, command=cmd, stdout=r.stdout, stderr=r.stderr, returncode=0)
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(tmpdir, ignore_errors=True)

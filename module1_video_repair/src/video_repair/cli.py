@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -32,7 +33,8 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def cmd_remux(args: argparse.Namespace) -> int:
-    out = Path(args.output) if args.output else Path(args.input).with_suffix("").with_name(Path(args.input).stem + "_remux.mp4")
+    inp = Path(args.input)
+    out = Path(args.output) if args.output else inp.with_name(inp.stem + "_remux.mp4")
     r = remux_with_ffmpeg(args.input, out, ffmpeg=args.ffmpeg)
     if not r.ok:
         sys.stderr.write(r.stderr + "\n")
@@ -42,7 +44,8 @@ def cmd_remux(args: argparse.Namespace) -> int:
 
 
 def cmd_untrunc(args: argparse.Namespace) -> int:
-    out = Path(args.output) if args.output else Path(args.broken).with_suffix("").with_name(Path(args.broken).stem + "_fixed.mp4")
+    broken = Path(args.broken)
+    out = Path(args.output) if args.output else broken.with_name(broken.stem + "_fixed.mp4")
     r = repair_with_untrunc(args.good, args.broken, out, untrunc=args.untrunc)
     if not r.ok:
         sys.stderr.write(r.stderr + "\n")
@@ -61,6 +64,7 @@ def cmd_batch_untrunc(args: argparse.Namespace) -> int:
         ffprobe=args.ffprobe,
         reencode_video=bool(args.reencode_video),
         report_path=args.report,
+        cleanup=not args.no_cleanup,
     )
     _print_json(asdict(report))
     return 0
@@ -96,12 +100,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--untrunc", default=None, help="untrunc.exe 路径（可选，不传则自动下载/查找 PATH）")
     p_batch.add_argument("--ffprobe", default=None, help="ffprobe.exe 路径（可选，不传则自动下载/查找 PATH）")
     p_batch.add_argument("--reencode-video", action="store_true", help="强兜底：对输出进行视频+音频重编码（解决花屏/扭曲，耗时长）")
+    p_batch.add_argument("--no-cleanup", action="store_true", help="保留中间文件（默认自动清理未使用的中间输出）")
     p_batch.set_defaults(func=cmd_batch_untrunc)
 
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 配置日志：默认 INFO 级别输出到 stderr，不影响 JSON stdout 输出
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
@@ -109,4 +121,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
